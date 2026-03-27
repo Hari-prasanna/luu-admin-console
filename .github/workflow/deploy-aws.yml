@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'aws/**' # Updated to watch the new 'aws' folder!
+      - 'aws/**' 
 
 permissions:
   id-token: write 
@@ -15,8 +15,6 @@ jobs:
   deploy-cloudformation:
     name: 🚀 Deploy CloudFormation
     runs-on: ubuntu-latest
-    
-    # 🚨 CRITICAL FIX: Tells GitHub to grab secrets from your specific Environment!
     environment: data_platform_infra 
 
     steps:
