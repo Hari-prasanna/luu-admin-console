@@ -1,0 +1,50 @@
+# Node modules (Let the container install its own fresh copies)
+node_modules
+npm-debug.log
+
+# Python cache files (Clears out local runtime artifacts)
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+
+# Version control (Massive history folders not needed inside the app)
+.git
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+
+# Environment files
+.env
+.env.local
+
+# Development tools
+.pytest_cache
+.coverage
+htmlcov
+
+# Documentation
+README.md
+notes.md
+
+
+# Oracle credentials (CRITICAL: Keeps secrets out of the image layers)
+oracle.env

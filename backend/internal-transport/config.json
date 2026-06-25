@@ -1,0 +1,65 @@
+{
+  "refresh_interval_milliseconds": 5000,
+  "tiles": [
+    {
+      "key": "we_bsf_ov",
+      "label": "WE zum BSF_OV",
+      "query": "ct.WE-BSF_OV.sql",
+      "unit": "units",
+      "thresholds": {
+        "green_threshold": 10,
+        "amber_threshold": 20
+      }
+    },
+    {
+      "key": "we_bgl",
+      "label": "WE zum BGL",
+      "query": "ct.WE-BGL.sql",
+      "unit": "units",
+      "thresholds": {
+        "green_threshold": 10,
+        "amber_threshold": 20
+      }
+    },
+    {
+      "key": "fin_ap_bgl",
+      "label": "FIN_AP zum BGL",
+      "query": "ct.FIN_AP-BGL.sql",
+      "unit": "units",
+      "thresholds": {
+        "green_threshold": 5,
+        "amber_threshold": 15
+      }
+    },
+    {
+      "key": "offene_auftraege",
+      "label": "Offene Aufträge",
+      "query": "ct.open_orders.sql",
+      "unit": "orders",
+      "thresholds": {
+        "green_threshold": 5,
+        "amber_threshold": 15
+      }
+    },
+    {
+      "key": "offene_positionen",
+      "label": "Offene Positionen",
+      "query": "ct.open_positions_bgl.sql",
+      "unit": "positions",
+      "thresholds": {
+        "green_threshold": 20,
+        "amber_threshold": 35
+      }
+    },
+    {
+      "key": "bgl_bsf_ov",
+      "label": "BGL zum BSF_OV",
+      "query": "ct.BGL-BSF_OV.sql",
+      "unit": "units",
+      "thresholds": {
+        "green_threshold": 20,
+        "amber_threshold": 40
+      }
+    }
+  ]
+}
