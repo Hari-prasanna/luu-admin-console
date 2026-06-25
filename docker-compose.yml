@@ -1,0 +1,58 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: luu-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_BACKEND_URL: "http://internal-transport-api:8000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      internal-transport-api:
+        condition: service_healthy
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    networks:
+      - luu-network
+
+  internal-transport-api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: luu-backend-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./oracle.env
+    environment:
+      AUTH_SECRET: "change-me-to-a-strong-random-secret-use-openssl-rand-hex-32"
+      AUTH_BOOTSTRAP_ADMIN_USER: "admin"
+      AUTH_BOOTSTRAP_ADMIN_PASSWORD: "ChangeMe123!"
+      AUTH_BOOTSTRAP_USER: "operator"
+      AUTH_BOOTSTRAP_USER_PASSWORD: "ChangeMe456!"
+    volumes:
+      - ./backend:/app/backend
+      - ./common:/common
+      - ./oracle.env:/app/oracle.env
+      - ./service_account.json:/app/service_account.json
+      - /app/backend/__pycache__
+      - /app/backend/internal-transport/__pycache__
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - luu-network
+
+networks:
+  luu-network:
+    driver: bridge

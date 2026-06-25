@@ -1,0 +1,17 @@
+{
+  "poll_interval_seconds": 3,
+  "idle_timeout_seconds": 1200,
+  "google_sheets": {
+    "spreadsheet_id": "",
+    "test_sheet_name": "Inventur",
+    "trigger_cell": "A2",
+    "sektor_sheet_name": "sektor"
+  },
+  "oracle": {
+    "query_timeout_seconds": 30
+  },
+  "docker": {
+    "image": "sektor-auto-pilot:latest",
+    "grace_period_seconds": 15
+  }
+}
