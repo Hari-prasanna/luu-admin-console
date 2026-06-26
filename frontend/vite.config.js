@@ -14,11 +14,11 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
-      "/auth": {
+      "/health": {
         target: backendUrl,
         changeOrigin: true,
       },
-      "/audit": {
+      "/docs": {
         target: backendUrl,
         changeOrigin: true,
       },

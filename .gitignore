@@ -1,10 +1,11 @@
-
+# ── Credentials (never commit) ────────────────────────────────────────────────
 oracle.env
 service_account.json
 .env
 *.key
 credentials.json
 
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -21,15 +22,18 @@ wheels/
 *.egg-info/
 *.egg
 
+# ── Virtual environments ───────────────────────────────────────────────────────
 .venv/
 venv/
 ENV/
 env/
 
+# ── Node ──────────────────────────────────────────────────────────────────────
 node_modules/
 dist/
 .parcel-cache/
 
+# ── Logs & runtime state ──────────────────────────────────────────────────────
 *.log
 logs/
 last_status
@@ -37,9 +41,14 @@ last_status
 backend/internal-transport/logs/
 backend/automation/sektor_pilot/state/
 
+# ── Runtime auth store (recreated from env vars on first start) ───────────────
 backend/auth/users.json
 backend/auth/audit_logs.json
 
+# ── Postman docs (keep collection JSON, skip internal guides) ─────────────────
+postman/*.md
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
@@ -47,13 +56,15 @@ backend/auth/audit_logs.json
 *.sublime-project
 *.sublime-workspace
 
-
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
 
+# ── Claude Code ───────────────────────────────────────────────────────────────
 .claude/
 .claude-paths
 
-CLAUDE.md
+# ── Personal dev notes ────────────────────────────────────────────────────────
 notes.md
+CLAUDE.md

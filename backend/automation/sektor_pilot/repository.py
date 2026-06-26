@@ -8,6 +8,7 @@ Per Clean Code Chapter 7: specific typed exceptions — no bare except blocks.
 """
 
 import logging
+import os
 from datetime import datetime
 from enum import Enum
 from typing import List, Optional
@@ -20,6 +21,8 @@ from backend.exceptions import (
 from backend.infrastructure.google_sheets import GoogleSheetsClient
 
 logger = logging.getLogger(__name__)
+
+SYSTEM_USER = os.environ.get("SEKTOR_AUDIT_SYSTEM_USER", "system")
 
 
 # ─── Domain Models ───
@@ -358,7 +361,7 @@ class AuditLedger:
         """
         Append a console action entry to the console_logs sheet (flat row format).
 
-        Row format: [Timestamp, "Hari Prasanna", Action_Triggered, Target_Name]
+        Row format: [Timestamp, System User, Action_Triggered, Target_Name]
 
         Args:
             spreadsheet_id: Google Sheets document ID
@@ -375,7 +378,7 @@ class AuditLedger:
 
         console_entry_row = [
             datetime.now().isoformat(),
-            "Hari Prasanna",
+            SYSTEM_USER,
             action_triggered,
             target_name,
         ]

@@ -93,7 +93,7 @@ def _load_credentials_from_json_string(
             "Invalid JSON in Google Sheets credentials string",
             context={
                 "env_var": GOOGLE_SHEETS_CREDENTIALS_ENV_VAR,
-                "preview": credentials_json_string[:200],
+                "char_count": len(credentials_json_string),
                 "error": str(json_parse_failure),
             },
         ) from json_parse_failure
@@ -319,23 +319,29 @@ class GoogleSheetsClient:
         self,
         spreadsheet_id: str,
         data_matrix: List[List],
+        target_sheet_name: str = "sektor",
     ) -> None:
         """
-        Clear the 'sektor' sheet and overwrite with a new data matrix.
+        Clear the target sektor sheet and overwrite with a new data matrix.
 
         Args:
             spreadsheet_id: Google Sheets document ID
             data_matrix: 2D list of rows to write (header + data rows)
+            target_sheet_name: Destination sheet tab name (default: "sektor")
 
         Raises:
             GoogleSheetsAuthenticationError: On permission errors
             GoogleSheetsNetworkError: On server/connection errors
             GoogleSheetsDataError: On invalid range or data errors
         """
-        self._clear_sheet_range(spreadsheet_id, "sektor")
+        self._clear_sheet_range(spreadsheet_id, target_sheet_name)
 
         if data_matrix:
-            self._write_values_to_range(spreadsheet_id, "sektor!A1", data_matrix)
+            self._write_values_to_range(
+                spreadsheet_id,
+                f"{target_sheet_name}!A1",
+                data_matrix,
+            )
 
     async def clear_trigger_cell(
         self,

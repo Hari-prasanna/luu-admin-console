@@ -10,12 +10,14 @@ import subprocess
 import json
 import logging
 import time
+import os
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from backend.exceptions import DockerExecutionError
-from backend.config import Constants
+from backend.config import Constants, settings
+from backend.automation.sektor_pilot.sector_config import get_sector_config
 
 logger = logging.getLogger(__name__)
 
@@ -179,18 +181,55 @@ class DockerCommandExecutor:
 class ContainerManager:
     """Manages Docker container lifecycle for all Sektor Pilot worker sectors."""
 
-    def __init__(self, container_image: str = "sektor-auto-pilot:latest") -> None:
+    def __init__(self, container_image: Optional[str] = None) -> None:
         """
         Initialize with Docker image name.
 
         Args:
             container_image: Docker image name:tag to run for each worker
         """
-        self.container_image = container_image
+        self.container_image = container_image or settings.sektor_docker_image or self._detect_current_container_image()
         self._state_repo = StateFileRepository()
         self._docker_executor = DockerCommandExecutor(
             timeout_seconds=Constants.DOCKER_COMMAND_TIMEOUT_SECONDS
         )
+
+    def _detect_current_container_image(self) -> str:
+        """
+        Detect the current backend container image at runtime.
+
+        This avoids hardcoding a worker image tag and keeps worker/runtime parity.
+
+        Returns:
+            Docker image reference for the currently running backend container.
+
+        Raises:
+            DockerExecutionError: If no image can be detected.
+        """
+        current_container_id = os.getenv("HOSTNAME", "").strip()
+        if not current_container_id:
+            raise DockerExecutionError(
+                "Unable to resolve worker image: HOSTNAME is not set",
+                context={"hint": "Set SEKTOR_DOCKER_IMAGE in environment"},
+            )
+
+        inspect_result = DockerCommandExecutor(
+            timeout_seconds=Constants.DOCKER_COMMAND_TIMEOUT_SECONDS
+        ).execute([
+            "docker", "inspect", current_container_id, "--format", "{{.Config.Image}}"
+        ])
+        if not inspect_result.is_success() or not inspect_result.standard_output:
+            raise DockerExecutionError(
+                "Unable to resolve worker image from current container",
+                context={
+                    "container_id": current_container_id,
+                    "stderr": inspect_result.standard_error,
+                },
+            )
+
+        resolved_image = inspect_result.standard_output.strip()
+        logger.info("resolved_worker_image_from_current_container", extra={"image": resolved_image})
+        return resolved_image
 
     def _get_container_name(self, sector_id: str) -> str:
         """Return standardized container name for a sector."""
@@ -268,17 +307,8 @@ class ContainerManager:
         Returns:
             List of command tokens ready for subprocess
         """
-        import json
-        from pathlib import Path
-
-        creds_content = ""
-        try:
-            creds_path = Path("/app/service_account.json")
-            if creds_path.is_file():
-                with open(creds_path) as f:
-                    creds_content = f.read()
-        except Exception:
-            pass
+        creds_path = Path("/app/service_account.json")
+        sector_config = get_sector_config(sector_id)
 
         cmd = [
             "docker", "run", "-d",
@@ -287,10 +317,37 @@ class ContainerManager:
             "-e", f"SECTOR_ID={sector_id}",
         ]
 
-        if creds_content:
-            cmd.extend(["-e", f"GOOGLE_SHEETS_CREDENTIALS={creds_content}"])
+        spreadsheet_id = sector_config.get("spreadsheet_id", "")
+        if spreadsheet_id:
+            cmd.extend(["-e", f"GOOGLE_SHEETS_SPREADSHEET_ID={spreadsheet_id}"])
 
-        cmd.append(self.container_image)
+        normalized_sector_id = "".join(
+            character if character.isalnum() else "_"
+            for character in sector_id
+        ).upper()
+        sector_override_env_map = {
+            f"SEKTOR_{normalized_sector_id}_TRIGGER_SHEET_NAME": sector_config.get("trigger_sheet_name", ""),
+            f"SEKTOR_{normalized_sector_id}_TRIGGER_CELL": sector_config.get("trigger_cell", ""),
+            f"SEKTOR_{normalized_sector_id}_TARGET_SHEET_NAME": sector_config.get("target_sheet_name", ""),
+        }
+        for env_key, env_value in sector_override_env_map.items():
+            if env_value:
+                cmd.extend(["-e", f"{env_key}={env_value}"])
+
+        if creds_path.is_file():
+            # Pass credentials as inline JSON (base64-encoded for safety)
+            import base64
+            with open(creds_path, 'r') as f:
+                creds_json = f.read()
+            creds_b64 = base64.b64encode(creds_json.encode()).decode()
+            cmd.extend(["-e", f"GOOGLE_SHEETS_CREDENTIALS={creds_json}"])
+
+        cmd.extend([
+            self.container_image,
+            "python",
+            "-m",
+            "backend.automation.sektor_pilot.worker",
+        ])
         return cmd
 
     def _record_container_started(
@@ -484,20 +541,25 @@ class ContainerManager:
                 context={"container_name": container_name, "error": stop_result.standard_error},
             )
 
-    def _remove_container(self, container_name: str) -> None:
+    def _remove_container(self, container_name: str) -> bool:
         """
-        Remove a stopped container (non-fatal on failure).
+        Remove a stopped container.
 
         Args:
             container_name: Docker container name
+
+        Returns:
+            True if container was removed, False otherwise
         """
         try:
-            self._docker_executor.execute(["docker", "rm", container_name])
+            remove_result = self._docker_executor.execute(["docker", "rm", container_name])
+            return remove_result.is_success()
         except DockerExecutionError as remove_failure:
             logger.warning(
                 "failed_to_remove_container",
                 extra={"container_name": container_name, "error": str(remove_failure)},
             )
+            return False
 
     def _record_container_stopped(self, sector_id: str) -> None:
         """
@@ -526,15 +588,24 @@ class ContainerManager:
         Returns:
             Dict with success, state, message
         """
-        try:
-            logger.info("stopping_container", extra={"container_name": container_name})
-            self._stop_container_gracefully(container_name)
-        except DockerExecutionError as stop_failure:
-            logger.error("failed_to_stop_container", extra={"sector_id": sector_id, "error": str(stop_failure)})
-            return {"success": False, "state": ContainerState.ERROR, "message": Constants.ERROR_DOCKER_EXECUTION_FAILED}
+        if self._container_is_running(container_name):
+            try:
+                logger.info("stopping_container", extra={"container_name": container_name})
+                self._stop_container_gracefully(container_name)
+            except DockerExecutionError as stop_failure:
+                logger.error("failed_to_stop_container", extra={"sector_id": sector_id, "error": str(stop_failure)})
+                return {"success": False, "state": ContainerState.ERROR, "message": Constants.ERROR_DOCKER_EXECUTION_FAILED}
+        else:
+            logger.info("container_already_stopped_removing", extra={"container_name": container_name})
 
         logger.info("removing_container", extra={"container_name": container_name})
-        self._remove_container(container_name)
+        if not self._remove_container(container_name):
+            return {
+                "success": False,
+                "state": ContainerState.ERROR,
+                "message": Constants.ERROR_DOCKER_EXECUTION_FAILED,
+            }
+
         self._record_container_stopped(sector_id)
         logger.info("container_stopped", extra={"container_name": container_name})
         return {"success": True, "state": ContainerState.STOPPED, "message": f"Container {container_name} stopped"}
@@ -605,6 +676,17 @@ class ContainerManager:
         container_name = self._get_container_name(sector_id)
         saved_state = self._state_repo.load(sector_id)
         actual_container_state = self._resolve_actual_container_state(container_name)
+
+        if actual_container_state == ContainerState.IDLE:
+            logger.info(
+                "cleaning_up_exited_container",
+                extra={"sector_id": sector_id, "container_name": container_name},
+            )
+            if self._remove_container(container_name):
+                self._record_container_stopped(sector_id)
+                saved_state = self._state_repo.load(sector_id)
+                actual_container_state = ContainerState.STOPPED
+
         self._sync_saved_state_if_drifted(sector_id, saved_state, actual_container_state)
 
         return {
@@ -614,6 +696,7 @@ class ContainerManager:
             "container_id": saved_state.get("container_id"),
             "started_at": saved_state.get("started_at"),
             "paused_at": saved_state.get("paused_at"),
+            "idle_timeout_seconds": settings.sektor_idle_timeout_seconds,
         }
 
     def get_all_status(self) -> List[Dict[str, Any]]:
@@ -623,6 +706,9 @@ class ContainerManager:
         Returns:
             List of status dicts, one per sector instance
         """
-        from backend.automation.sektor_pilot.sector_config import SECTOR_INSTANCES
+        from backend.automation.sektor_pilot.sector_config import list_sectors
 
-        return [self.get_status(sector_id) for sector_id in SECTOR_INSTANCES.keys()]
+        configured_sector_ids = [
+            sector_info["sector_id"] for sector_info in list_sectors()
+        ]
+        return [self.get_status(sector_id) for sector_id in configured_sector_ids]

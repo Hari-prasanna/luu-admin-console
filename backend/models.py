@@ -96,3 +96,23 @@ class SystemStatus(BaseModel):
     google_sheets_auth: bool = Field(..., description="Are Google Sheets credentials valid?")
     last_check_timestamp: datetime
     diagnostics: dict[str, Any] = Field(default_factory=dict, description="Debug info")
+
+
+# ─── Sektor Pilot Models (from backend.automation.sektor_pilot.models) ───
+# These are imported from the submodule to maintain single source of truth
+
+from backend.automation.sektor_pilot.models import (
+    SectorWorkerStartRequest,
+    SectorWorkerPauseRequest,
+    SectorWorkerStopRequest,
+    ActionResponse as WorkerActionResponse,
+    StatusResponse as WorkerStatusResponse,
+    SectorListItem as SectorInfo,
+)
+
+
+class HealthCheckResponse(BaseModel):
+    """Response from the health check endpoint."""
+
+    status: str
+    service: str
