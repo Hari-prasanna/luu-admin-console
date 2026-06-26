@@ -27,6 +27,12 @@ ORACLE_ENV_FILE_ENV_VAR = "ORA_ENV_FILE"
 ORACLE_QUERY_FILENAME = "zal_bestand.sql"
 ORACLE_REQUIRED_CREDENTIAL_KEYS = ("user", "password", "host", "service")
 ORACLE_DEFAULT_PORT = "1521"
+ORACLE_POOL_MIN_SIZE = 2
+ORACLE_POOL_MAX_SIZE = 10
+ORACLE_POOL_INCREMENT = 1
+
+# Global connection pool (singleton)
+_oracle_connection_pool: Optional["oracledb.ConnectionPool"] = None
 
 
 # ─── Credential File Loading ───
@@ -166,46 +172,89 @@ def build_oracle_connection_credentials(
     return oracle_connection_credentials
 
 
-# ─── Connection ───
+# ─── Connection Pool ───
 
 
-def open_oracle_connection(
+def _get_or_create_connection_pool(
     oracle_connection_credentials: Dict[str, str],
-) -> "oracledb.Connection":
+) -> "oracledb.ConnectionPool":
     """
-    Open and return a synchronous Oracle database connection.
+    Get or create a shared Oracle connection pool.
+
+    Uses lazy initialization on first call. Subsequent calls return the cached pool.
 
     Args:
         oracle_connection_credentials: Dict with user, password, host, port, service
 
     Returns:
-        Active oracledb.Connection
+        Active oracledb.ConnectionPool
 
     Raises:
-        OracleConnectionError: If the connection attempt fails
+        OracleConnectionError: If pool creation fails
     """
+    global _oracle_connection_pool
+
+    if _oracle_connection_pool is not None:
+        return _oracle_connection_pool
+
     oracle_dsn = (
         f"{oracle_connection_credentials['host']}"
         f":{oracle_connection_credentials['port']}"
         f"/{oracle_connection_credentials['service']}"
     )
     logger.info(
-        "oracle_connection_attempt",
-        extra={"dsn": oracle_dsn, "user": oracle_connection_credentials["user"]},
+        "oracle_connection_pool_creating",
+        extra={
+            "dsn": oracle_dsn,
+            "min_size": ORACLE_POOL_MIN_SIZE,
+            "max_size": ORACLE_POOL_MAX_SIZE,
+        },
     )
     try:
-        oracle_connection = oracledb.connect(
+        _oracle_connection_pool = oracledb.create_pool(
             user=oracle_connection_credentials["user"],
             password=oracle_connection_credentials["password"],
             dsn=oracle_dsn,
+            min=ORACLE_POOL_MIN_SIZE,
+            max=ORACLE_POOL_MAX_SIZE,
+            increment=ORACLE_POOL_INCREMENT,
         )
-        logger.info("oracle_connection_established", extra={"dsn": oracle_dsn})
-        return oracle_connection
-    except oracledb.Error as oracle_connection_failure:
+        logger.info("oracle_connection_pool_created", extra={"dsn": oracle_dsn})
+        return _oracle_connection_pool
+    except oracledb.Error as pool_creation_failure:
         raise OracleConnectionError(
-            f"Failed to connect to Oracle at {oracle_dsn}",
-            context={"dsn": oracle_dsn, "error": str(oracle_connection_failure)},
-        ) from oracle_connection_failure
+            f"Failed to create Oracle connection pool for {oracle_dsn}",
+            context={"dsn": oracle_dsn, "error": str(pool_creation_failure)},
+        ) from pool_creation_failure
+
+
+def open_oracle_connection(
+    oracle_connection_credentials: Dict[str, str],
+) -> "oracledb.Connection":
+    """
+    Acquire a connection from the pool or create a new one if pool unavailable.
+
+    Args:
+        oracle_connection_credentials: Dict with user, password, host, port, service
+
+    Returns:
+        Active oracledb.Connection (from pool if available, fresh otherwise)
+
+    Raises:
+        OracleConnectionError: If connection acquisition fails
+    """
+    try:
+        pool = _get_or_create_connection_pool(oracle_connection_credentials)
+        connection = pool.acquire()
+        logger.debug("oracle_connection_acquired_from_pool")
+        return connection
+    except OracleConnectionError:
+        raise
+    except oracledb.Error as connection_failure:
+        raise OracleConnectionError(
+            "Failed to acquire connection from Oracle pool",
+            context={"error": str(connection_failure)},
+        ) from connection_failure
 
 
 # ─── Query File Loading ───
@@ -215,7 +264,7 @@ def _resolve_zal_bestand_query_file_path() -> str:
     """
     Resolve path to zal_bestand.sql query file.
 
-    Checks local queries/ directory first, then Docker container /app/queries/ path.
+    Checks sektor_pilot query directory first, then Docker container path.
 
     Returns:
         Path to the SQL query file
@@ -223,8 +272,25 @@ def _resolve_zal_bestand_query_file_path() -> str:
     Raises:
         OracleQueryError: If query file cannot be found at either location
     """
-    local_query_path = os.path.join(os.path.dirname(__file__), "queries", ORACLE_QUERY_FILENAME)
-    docker_query_path = os.path.join("/app", "queries", ORACLE_QUERY_FILENAME)
+    project_root_path = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..")
+    )
+    local_query_path = os.path.join(
+        project_root_path,
+        "backend",
+        "automation",
+        "sektor_pilot",
+        "queries",
+        ORACLE_QUERY_FILENAME,
+    )
+    docker_query_path = os.path.join(
+        "/app",
+        "backend",
+        "automation",
+        "sektor_pilot",
+        "queries",
+        ORACLE_QUERY_FILENAME,
+    )
 
     if os.path.exists(local_query_path):
         return local_query_path

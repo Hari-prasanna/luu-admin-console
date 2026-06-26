@@ -13,16 +13,31 @@ import os
 import stat
 import sys
 import threading
+import uuid
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from decimal import Decimal
 from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Optional, Any
+from filelock import FileLock
 
 import bcrypt
 import jwt
 from fastapi import FastAPI, Depends, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.database import get_db_session, init_db, close_db
+from backend.services import AuditService, MetricService, PipelineService, NotificationService
+from backend.logging_config import setup_structured_logging, StructuredLoggerAdapter, set_request_id
+from backend.health_check import get_health_check
+
+# Context variable for storing request ID in async context
+_request_id_context: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
 
 # Imports from backend infrastructure
 try:
@@ -47,11 +62,15 @@ if _COMMON_DIR not in sys.path:
 
 from common import notify
 
+# Initialize logger early for import error handling
+logging.basicConfig(level=logging.DEBUG)
+_early_logger = logging.getLogger("butler_startup")
+
 try:
     from .sektor_pilot import router as sektor_pilot_router
     SEKTOR_PILOT_AVAILABLE = True
 except Exception as sektor_import_error:
-    logger.error("sektor_pilot_import_failed", extra={"error": str(sektor_import_error)}, exc_info=sektor_import_error)
+    _early_logger.error("sektor_pilot_import_failed", extra={"error": str(sektor_import_error)}, exc_info=sektor_import_error)
     SEKTOR_PILOT_AVAILABLE = False
 
 try:
@@ -67,10 +86,16 @@ except Exception:
 
 # ─── Authentication Constants ───
 
-JWT_SECRET = os.environ.get(
-    "AUTH_SECRET",
-    "change-me-in-production-use-a-strong-secret-key-at-least-32-chars"
-)
+try:
+    JWT_SECRET = os.environ["AUTH_SECRET"]
+    if len(JWT_SECRET) < 32:
+        raise ValueError("AUTH_SECRET must be at least 32 characters")
+except KeyError:
+    raise RuntimeError(
+        "AUTH_SECRET environment variable is required and must be at least 32 characters. "
+        "Generate one with: openssl rand -hex 16"
+    )
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
 
@@ -90,7 +115,23 @@ LOG_FILE = os.path.join(LOG_DIR, "butler.log")
 
 logger = logging.getLogger("butler")
 
+# ─── Request ID Context Variable ───
+
+
+def get_request_id() -> str:
+    """Get current request ID from context."""
+    return _request_id_context.get() or "unknown"
+
+
 # ─── Logging Setup ───
+
+
+class RequestIdFilter(logging.Filter):
+    """Add request ID to log records."""
+
+    def filter(self, record):
+        record.request_id = get_request_id()
+        return True
 
 
 def setup_logging() -> None:
@@ -101,7 +142,7 @@ def setup_logging() -> None:
     logger.propagate = False
 
     formatter = logging.Formatter(
-        "%(asctime)s  %(levelname)-7s  %(message)s",
+        "%(asctime)s  [%(request_id)s]  %(levelname)-7s  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
@@ -110,6 +151,7 @@ def setup_logging() -> None:
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(RequestIdFilter())
     logger.addHandler(console_handler)
 
     file_handler = RotatingFileHandler(
@@ -119,6 +161,7 @@ def setup_logging() -> None:
         encoding="utf-8",
     )
     file_handler.setFormatter(formatter)
+    file_handler.addFilter(RequestIdFilter())
     logger.addHandler(file_handler)
 
 
@@ -126,7 +169,9 @@ setup_logging()
 
 # ─── FastAPI App ───
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Internal Transport Metrics API")
+app.state.limiter = limiter
 
 if SEKTOR_PILOT_AVAILABLE:
     app.include_router(sektor_pilot_router)
@@ -144,6 +189,61 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── Request Correlation ID Middleware ───
+
+class CorrelationIdMiddleware:
+    """Add unique correlation ID to each request for tracing."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = None
+        if scope.get("headers"):
+            for header_name, header_value in scope["headers"]:
+                if header_name.lower() == b"x-request-id":
+                    request_id = header_value.decode()
+                    break
+
+        if not request_id:
+            request_id = str(uuid.uuid4())
+
+        scope["request_id"] = request_id
+        _request_id_context.set(request_id)
+
+        async def send_with_request_id(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"x-request-id", request_id.encode()))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_request_id)
+
+
+app.add_middleware(CorrelationIdMiddleware)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Handle rate limit exceeded errors."""
+    append_audit_entry(
+        event_type="rate_limit_exceeded",
+        actor="unknown",
+        detail_message=f"Too many requests from {request.client.host if request.client else 'unknown'}",
+        endpoint_path=str(request.url.path),
+        operation_status="blocked",
+    )
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Too many requests. Try again later."},
+    )
 
 # ─── Utility Functions ───
 
@@ -381,23 +481,27 @@ def load_dashboard_config() -> Dict[str, Any]:
 
 
 def read_json_file(filepath: str, default_value: Any) -> Any:
-    """Read JSON file safely."""
+    """Read JSON file safely with file locking."""
     if not os.path.isfile(filepath):
         return default_value
+    lock_path = f"{filepath}.lock"
     try:
-        with open(filepath, encoding="utf-8") as json_file:
-            return json.load(json_file)
+        with FileLock(lock_path, timeout=5):
+            with open(filepath, encoding="utf-8") as json_file:
+                return json.load(json_file)
     except Exception as file_error:
         logger.error("failed_to_read_json", extra={"file": filepath, "error": str(file_error)})
         return default_value
 
 
 def write_json_file(filepath: str, data: Any) -> None:
-    """Write JSON file safely."""
+    """Write JSON file safely with file locking."""
+    lock_path = f"{filepath}.lock"
     try:
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, "w", encoding="utf-8") as json_file:
-            json.dump(data, json_file, ensure_ascii=False, indent=2)
+        with FileLock(lock_path, timeout=5):
+            with open(filepath, "w", encoding="utf-8") as json_file:
+                json.dump(data, json_file, ensure_ascii=False, indent=2)
     except Exception as file_error:
         logger.error("failed_to_write_json", extra={"file": filepath, "error": str(file_error)})
 
@@ -425,15 +529,17 @@ def read_audit_logs_list() -> List[Dict[str, Any]]:
     return logs if isinstance(logs, list) else []
 
 
-def append_audit_entry(
+async def append_audit_entry_async(
     event_type: str,
     actor: str = "system",
     actor_role: str = "system",
     operation_status: str = "success",
     detail_message: str = "",
-    endpoint_path: str = ""
+    endpoint_path: str = "",
+    db: Optional[AsyncSession] = None,
 ) -> None:
-    """Append entry to audit log."""
+    """Append entry to audit log with optional PostgreSQL persistence."""
+    # Always write to JSON for backward compatibility
     logs = read_audit_logs_list()
     logs.append({
         "timestamp": get_current_timestamp(),
@@ -444,6 +550,47 @@ def append_audit_entry(
         "ip": "local",
         "detail": detail_message,
         "path": endpoint_path,
+        "request_id": get_request_id(),
+    })
+    write_json_file(AUDIT_LOG_FILE, logs[-500:])
+
+    # Also write to PostgreSQL if database connection available
+    if db:
+        try:
+            audit_service = AuditService(db)
+            await audit_service.log_event(
+                event_type=event_type,
+                actor=actor,
+                actor_role=actor_role,
+                operation_status=operation_status,
+                detail_message=detail_message,
+                endpoint_path=endpoint_path,
+                request_id=get_request_id(),
+            )
+        except Exception as db_error:
+            logger.warning("audit_log_database_write_failed", extra={"error": str(db_error)})
+
+
+def append_audit_entry(
+    event_type: str,
+    actor: str = "system",
+    actor_role: str = "system",
+    operation_status: str = "success",
+    detail_message: str = "",
+    endpoint_path: str = ""
+) -> None:
+    """Append entry to audit log (JSON only, for sync contexts)."""
+    logs = read_audit_logs_list()
+    logs.append({
+        "timestamp": get_current_timestamp(),
+        "event": event_type,
+        "actor": actor,
+        "role": actor_role,
+        "status": operation_status,
+        "ip": "local",
+        "detail": detail_message,
+        "path": endpoint_path,
+        "request_id": get_request_id(),
     })
     write_json_file(AUDIT_LOG_FILE, logs[-500:])
 
@@ -488,96 +635,22 @@ def set_cached_metrics(payload: Dict[str, Any]) -> None:
         )
 
 
-# ─── Startup Event ───
+# ─── Background Metrics Refresh ───
+
+_metrics_refresh_thread: Optional[threading.Thread] = None
+_metrics_refresh_running = False
 
 
-@app.on_event("startup")
-async def bootstrap_initial_users() -> None:
-    """Initialize admin and user accounts if not already configured."""
-    existing_users = read_users_list()
-    if existing_users:
-        logger.info("users_already_initialized")
-        return
+def _refresh_metrics_background() -> None:
+    """Background worker: continuously refresh metrics on schedule."""
+    global _metrics_refresh_running
+    _metrics_refresh_running = True
 
-    admin_username = os.environ.get("AUTH_BOOTSTRAP_ADMIN_USER", "").strip()
-    admin_password = os.environ.get("AUTH_BOOTSTRAP_ADMIN_PASSWORD", "").strip()
-    user_username = os.environ.get("AUTH_BOOTSTRAP_USER", "").strip()
-    user_password = os.environ.get("AUTH_BOOTSTRAP_USER_PASSWORD", "").strip()
-
-    new_users = []
-    if admin_username and admin_password:
-        new_users.append({
-            "username": admin_username,
-            "password_hash": hash_password(admin_password),
-            "role": "admin",
-            "created_at": get_current_timestamp(),
-        })
-        logger.info("bootstrap_admin_user_created", extra={"username": admin_username})
-
-    if user_username and user_password:
-        new_users.append({
-            "username": user_username,
-            "password_hash": hash_password(user_password),
-            "role": "user",
-            "created_at": get_current_timestamp(),
-        })
-        logger.info("bootstrap_user_user_created", extra={"username": user_username})
-
-    if new_users:
-        write_users_list(new_users)
-        append_audit_entry(
-            event_type="bootstrap",
-            actor="system",
-            detail_message=f"Bootstrapped {len(new_users)} users",
-            endpoint_path="/startup",
-        )
-
-
-# ─── Routes: Health ───
-
-
-@app.get("/health")
-def health_check() -> Dict[str, str]:
-    """Simple health check endpoint for load balancers and Docker."""
-    return {"status": "ok", "service": "internal-transport-api"}
-
-
-# ─── Routes: Metrics ───
-
-
-@app.get("/api/config")
-def get_dashboard_config() -> Dict[str, Any]:
-    """Get dashboard configuration and tile definitions."""
-    try:
-        config = load_dashboard_config()
-        return {
-            "refresh_interval_milliseconds": config.get("refresh_interval_milliseconds", 5000),
-            "tiles": config["tiles"],
-        }
-    except (ConfigurationError, ValidationError) as config_error:
-        logger.error("config_endpoint_failed", extra={"error": str(config_error)})
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Failed to load config"}
-        )
-
-
-@app.get("/api/metrics")
-def get_live_metrics() -> Dict[str, Any]:
-    """Get live metrics from Oracle (with caching)."""
-    try:
-        config = load_dashboard_config()
-        refresh_ms = int(config.get("refresh_interval_milliseconds", 5000) or 5000)
-        refresh_seconds = max(1, refresh_ms // 1000)
-
-        cached_payload = get_cached_metrics_if_valid(refresh_seconds)
-        if cached_payload is not None:
-            return cached_payload
-
-        with _METRICS_REFRESH_LOCK:
-            cached_payload = get_cached_metrics_if_valid(refresh_seconds)
-            if cached_payload is not None:
-                return cached_payload
+    while _metrics_refresh_running:
+        try:
+            config = load_dashboard_config()
+            refresh_ms = int(config.get("refresh_interval_milliseconds", 5000) or 5000)
+            refresh_seconds = max(1, refresh_ms // 1000)
 
             credentials = load_secure_credentials_file()
             if "CHAT_WEBHOOK_URL" in credentials:
@@ -597,24 +670,149 @@ def get_live_metrics() -> Dict[str, Any]:
                 "cache_age_seconds": 0,
             }
             set_cached_metrics(payload)
+            notify.report_dashboard_outcome(DASHBOARD_LABEL, STATUS_FILE, True, "")
+            logger.debug("background_metrics_refreshed", extra={"metric_count": len(metric_values)})
 
-        notify.report_dashboard_outcome(DASHBOARD_LABEL, STATUS_FILE, True, "")
-        return payload
+        except Exception as refresh_error:
+            logger.error("background_metrics_refresh_failed", extra={"error": str(refresh_error)})
+            notify.report_dashboard_outcome(DASHBOARD_LABEL, STATUS_FILE, False, str(refresh_error))
 
-    except Exception as error:
-        logger.exception("metrics_endpoint_failed", extra={"error": str(error)})
-        notify.report_dashboard_outcome(DASHBOARD_LABEL, STATUS_FILE, False, str(error))
-        with _METRICS_CACHE_LOCK:
-            if _METRICS_CACHE_PAYLOAD is not None:
-                stale_payload = dict(_METRICS_CACHE_PAYLOAD)
-                stale_payload["stale"] = True
-                stale_payload["cached"] = True
-                stale_payload["cache_age_seconds"] = int(get_cache_age_seconds() or 0)
-                return stale_payload
+        try:
+            threading.Event().wait(refresh_seconds)
+        except KeyboardInterrupt:
+            break
+
+
+def start_background_metrics_refresh() -> None:
+    """Start the background metrics refresh thread (daemon mode)."""
+    global _metrics_refresh_thread, _metrics_refresh_running
+    if _metrics_refresh_thread is not None and _metrics_refresh_thread.is_alive():
+        logger.warning("background_metrics_refresh_already_running")
+        return
+
+    _metrics_refresh_running = True
+    _metrics_refresh_thread = threading.Thread(
+        target=_refresh_metrics_background,
+        daemon=True,
+        name="MetricsRefreshWorker",
+    )
+    _metrics_refresh_thread.start()
+    logger.info("background_metrics_refresh_started")
+
+
+def stop_background_metrics_refresh() -> None:
+    """Stop the background metrics refresh thread."""
+    global _metrics_refresh_running
+    _metrics_refresh_running = False
+    if _metrics_refresh_thread is not None:
+        _metrics_refresh_thread.join(timeout=5)
+        logger.info("background_metrics_refresh_stopped")
+
+
+# ─── Startup Event ───
+
+
+@app.on_event("startup")
+async def startup_database() -> None:
+    """Initialize database and run migrations."""
+    try:
+        await init_db()
+        logger.info("database_tables_created_or_verified")
+    except Exception as db_init_error:
+        logger.error("database_initialization_failed", extra={"error": str(db_init_error)})
+        raise
+
+
+@app.on_event("startup")
+async def bootstrap_initial_users() -> None:
+    """Initialize admin and user accounts if not already configured."""
+    existing_users = read_users_list()
+    if existing_users:
+        logger.info("users_already_initialized")
+    else:
+        admin_username = os.environ.get("AUTH_BOOTSTRAP_ADMIN_USER", "").strip()
+        admin_password = os.environ.get("AUTH_BOOTSTRAP_ADMIN_PASSWORD", "").strip()
+        user_username = os.environ.get("AUTH_BOOTSTRAP_USER", "").strip()
+        user_password = os.environ.get("AUTH_BOOTSTRAP_USER_PASSWORD", "").strip()
+
+        new_users = []
+        if admin_username and admin_password:
+            new_users.append({
+                "username": admin_username,
+                "password_hash": hash_password(admin_password),
+                "role": "admin",
+                "created_at": get_current_timestamp(),
+            })
+            logger.info("bootstrap_admin_user_created", extra={"username": admin_username})
+
+        if user_username and user_password:
+            new_users.append({
+                "username": user_username,
+                "password_hash": hash_password(user_password),
+                "role": "user",
+                "created_at": get_current_timestamp(),
+            })
+            logger.info("bootstrap_user_user_created", extra={"username": user_username})
+
+        if new_users:
+            write_users_list(new_users)
+            append_audit_entry(
+                event_type="bootstrap",
+                actor="system",
+                detail_message=f"Bootstrapped {len(new_users)} users",
+                endpoint_path="/startup",
+            )
+
+    start_background_metrics_refresh()
+
+
+@app.on_event("shutdown")
+async def shutdown_database() -> None:
+    """Close database connections."""
+    await close_db()
+    logger.info("database_connections_closed")
+
+
+@app.on_event("shutdown")
+async def shutdown_background_tasks() -> None:
+    """Clean up background threads on shutdown."""
+    stop_background_metrics_refresh()
+
+
+# ─── Routes: Metrics ───
+
+
+@app.get("/api/config")
+async def get_dashboard_config(request: Request) -> Dict[str, Any]:
+    """Get dashboard configuration and tile definitions."""
+    try:
+        config = load_dashboard_config()
+        return {
+            "refresh_interval_milliseconds": config.get("refresh_interval_milliseconds", 5000),
+            "tiles": config["tiles"],
+        }
+    except (ConfigurationError, ValidationError) as config_error:
+        logger.error("config_endpoint_failed", extra={"error": str(config_error)})
         return JSONResponse(
             status_code=500,
+            content={"error": "Failed to load config"}
+        )
+
+
+@app.get("/api/metrics")
+async def get_live_metrics(request: Request) -> Dict[str, Any]:
+    """Get cached metrics (refreshed by background thread)."""
+    with _METRICS_CACHE_LOCK:
+        if _METRICS_CACHE_PAYLOAD is not None:
+            payload = dict(_METRICS_CACHE_PAYLOAD)
+            payload["cached"] = True
+            payload["cache_age_seconds"] = int(get_cache_age_seconds() or 0)
+            return payload
+
+        return JSONResponse(
+            status_code=503,
             content={
-                "error": "Failed to fetch metrics",
+                "error": "Metrics cache not ready",
                 "last_updated": get_current_timestamp(),
             },
         )
@@ -624,6 +822,7 @@ def get_live_metrics() -> Dict[str, Any]:
 
 
 @app.post("/auth/login")
+@limiter.limit("5/minute")
 async def login_user(request: Request) -> Dict[str, Any]:
     """Authenticate user and return JWT token."""
     try:
@@ -742,6 +941,123 @@ async def create_new_user(
     )
 
 
+# ─── Routes: Historical Analytics ───
+
+
+@app.get("/api/analytics/metrics/{metric_key}")
+async def get_metric_history(
+    metric_key: str,
+    days: int = 7,
+    db: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Get historical metric data for analytics."""
+    try:
+        from datetime import timedelta
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        service = MetricService(db)
+        records = await service.get_metric_history(
+            metric_key=metric_key,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        return {
+            "metric_key": metric_key,
+            "period_days": days,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "total_records": len(records),
+            "values": [
+                {
+                    "timestamp": r.timestamp.isoformat(),
+                    "value": r.metric_value,
+                    "status": r.metric_status,
+                }
+                for r in records
+            ],
+        }
+    except Exception as error:
+        logger.exception("metrics_history_failed", extra={"metric_key": metric_key, "error": str(error)})
+        raise HTTPException(status_code=500, detail="Failed to fetch metrics history")
+
+
+@app.get("/api/analytics/audit-logs")
+async def get_audit_logs(
+    days: int = 7,
+    event_type: Optional[str] = None,
+    actor: Optional[str] = None,
+    user: Dict[str, str] = Depends(require_admin_role),
+    db: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Get audit logs for reporting (admin only)."""
+    try:
+        from datetime import timedelta
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        service = AuditService(db)
+        records = await service.get_logs_for_period(
+            start_date=start_date,
+            end_date=end_date,
+            event_type=event_type,
+            actor=actor,
+        )
+
+        return {
+            "period_days": days,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "total_records": len(records),
+            "logs": [
+                {
+                    "timestamp": r.timestamp.isoformat(),
+                    "event_type": r.event_type,
+                    "actor": r.actor,
+                    "status": r.operation_status,
+                    "detail": r.detail_message,
+                    "request_id": r.request_id,
+                }
+                for r in records
+            ],
+        }
+    except Exception as error:
+        logger.exception("audit_logs_failed", extra={"error": str(error)})
+        raise HTTPException(status_code=500, detail="Failed to fetch audit logs")
+
+
+@app.get("/api/analytics/trace/{request_id}")
+async def trace_request(
+    request_id: str,
+    user: Dict[str, str] = Depends(require_admin_role),
+    db: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Trace all events for a single request (admin only)."""
+    try:
+        service = AuditService(db)
+        events = await service.get_request_trace(request_id=request_id)
+
+        return {
+            "request_id": request_id,
+            "total_events": len(events),
+            "events": [
+                {
+                    "timestamp": e.timestamp.isoformat(),
+                    "event_type": e.event_type,
+                    "actor": e.actor,
+                    "status": e.operation_status,
+                    "detail": e.detail_message,
+                    "endpoint": e.endpoint_path,
+                }
+                for e in events
+            ],
+        }
+    except Exception as error:
+        logger.exception("request_trace_failed", extra={"request_id": request_id, "error": str(error)})
+        raise HTTPException(status_code=500, detail="Failed to trace request")
+
+
 # ─── Routes: Audit Logs ───
 
 
@@ -843,3 +1159,132 @@ async def search_audit_logs(
     valid_limit = max(1, min(limit, 200))
     valid_offset = max(0, offset)
     return format_audit_response(logs, valid_limit, valid_offset)
+
+
+# ─── Health Check Endpoints ───
+
+
+@app.get("/health")
+async def health_check() -> Dict[str, str]:
+    """Basic liveness probe."""
+    return {"status": "ok"}
+
+
+@app.get("/health/deep")
+async def deep_health_check(
+    session: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Comprehensive health check for all subsystems."""
+    try:
+        health_checker = get_health_check()
+
+        # Get oracle pool from environment
+        # Note: oracle_pool is created lazily, this is a placeholder check
+        result = await health_checker.deep_health_check(None, session)
+        return result
+    except Exception as error:
+        logger.error(
+            "deep_health_check_failed",
+            extra={
+                "error_message": str(error),
+                "status": "failure",
+            }
+        )
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "error": str(error),
+        }
+
+
+@app.get("/health/oracle")
+async def oracle_health() -> Dict[str, Any]:
+    """Check Oracle connectivity."""
+    health_checker = get_health_check()
+    return {
+        "status": "ok",
+        "service": "oracle",
+        "consecutive_failures": health_checker.oracle_consecutive_failures,
+        "last_error": health_checker.last_oracle_error,
+    }
+
+
+@app.get("/health/postgres")
+async def postgres_health(
+    session: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Check PostgreSQL connectivity."""
+    health_checker = get_health_check()
+    postgres_check = await health_checker.check_postgres(session)
+    return postgres_check
+
+
+@app.get("/health/automation")
+async def automation_health() -> Dict[str, Any]:
+    """Check automation workers health."""
+    health_checker = get_health_check()
+    return await health_checker.check_automation()
+
+
+@app.get("/metrics/dashboard")
+async def metrics_dashboard(
+    days: int = 7,
+    session: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Get operational dashboard metrics."""
+    try:
+        from sqlalchemy import text
+
+        valid_days = max(1, min(days, 90))
+
+        # Query job_executions for statistics
+        result = await session.execute(
+            text(f"""
+                SELECT
+                    COUNT(*) as total_jobs,
+                    COUNT(*) FILTER (WHERE status = 'success') as successful_jobs,
+                    COUNT(*) FILTER (WHERE status = 'failure') as failed_jobs,
+                    COUNT(*) FILTER (WHERE status = 'timeout') as timeout_jobs,
+                    COALESCE(CAST(100.0 * COUNT(*) FILTER (WHERE status = 'success') / NULLIF(COUNT(*), 0) AS NUMERIC), 0)::FLOAT8 as success_rate_percent,
+                    COALESCE(AVG(CAST(duration_seconds AS FLOAT8)), 0) as avg_duration_seconds
+                FROM job_executions
+                WHERE started_at >= NOW() - INTERVAL '{valid_days} days'
+            """)
+        )
+
+        row = result.fetchone()
+        if not row:
+            return {
+                "period": f"last_{valid_days}_days",
+                "summary": {
+                    "total_jobs_executed": 0,
+                    "successful_jobs": 0,
+                    "failed_jobs": 0,
+                    "success_rate_percent": 0,
+                    "avg_job_duration_seconds": 0,
+                }
+            }
+
+        return {
+            "period": f"last_{valid_days}_days",
+            "summary": {
+                "total_jobs_executed": row[0] or 0,
+                "successful_jobs": row[1] or 0,
+                "failed_jobs": row[2] or 0,
+                "timeout_jobs": row[3] or 0,
+                "success_rate_percent": float(row[4] or 0),
+                "avg_job_duration_seconds": float(row[5] or 0),
+            }
+        }
+    except Exception as error:
+        logger.error(
+            "metrics_dashboard_failed",
+            extra={
+                "error_message": str(error),
+                "status": "failure",
+            }
+        )
+        return {
+            "error": str(error),
+            "period": f"last_{days}_days",
+        }

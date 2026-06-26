@@ -1,4 +1,24 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: luu-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: luu_console
+      POSTGRES_USER: luu_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-luu_password_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U luu_user -d luu_console"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - luu-network
+
   frontend:
     build:
       context: ./frontend
@@ -27,14 +47,19 @@ services:
     container_name: luu-backend-api
     ports:
       - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file:
+      - ./.env
       - ./oracle.env
     environment:
-      AUTH_SECRET: "change-me-to-a-strong-random-secret-use-openssl-rand-hex-32"
-      AUTH_BOOTSTRAP_ADMIN_USER: "admin"
-      AUTH_BOOTSTRAP_ADMIN_PASSWORD: "ChangeMe123!"
-      AUTH_BOOTSTRAP_USER: "operator"
-      AUTH_BOOTSTRAP_USER_PASSWORD: "ChangeMe456!"
+      AUTH_SECRET: "${AUTH_SECRET}"
+      AUTH_BOOTSTRAP_ADMIN_USER: "${AUTH_BOOTSTRAP_ADMIN_USER:-admin}"
+      AUTH_BOOTSTRAP_ADMIN_PASSWORD: "${AUTH_BOOTSTRAP_ADMIN_PASSWORD}"
+      AUTH_BOOTSTRAP_USER: "${AUTH_BOOTSTRAP_USER:-operator}"
+      AUTH_BOOTSTRAP_USER_PASSWORD: "${AUTH_BOOTSTRAP_USER_PASSWORD}"
+      DATABASE_URL: postgresql+asyncpg://luu_user:${POSTGRES_PASSWORD:-luu_password_dev}@postgres:5432/luu_console
     volumes:
       - ./backend:/app/backend
       - ./common:/common
@@ -52,6 +77,10 @@ services:
     restart: unless-stopped
     networks:
       - luu-network
+
+volumes:
+  postgres_data:
+    driver: local
 
 networks:
   luu-network:

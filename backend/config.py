@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     server_reload: bool = os.getenv("SERVER_RELOAD", "false").lower() == "true"
 
     # Sektor Pilot
-    sektor_docker_image: str = os.getenv("SEKTOR_DOCKER_IMAGE", "sektor-auto-pilot:latest")
+    sektor_docker_image: str = os.getenv("SEKTOR_DOCKER_IMAGE", "")
     sektor_docker_timeout_seconds: int = 10
     sektor_docker_stop_grace_period_seconds: int = 15
     sektor_poll_interval_seconds: int = 3

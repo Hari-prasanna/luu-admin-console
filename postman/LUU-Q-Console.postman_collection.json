@@ -1,0 +1,1114 @@
+﻿{
+  "info": {
+    "name": "LUU Admin Console API",
+    "description": "Complete API collection for LUU Admin Console logistics platform",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has success status', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.status).to.equal('success');",
+                  "});",
+                  "",
+                  "pm.test('Response contains access_token', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data.access_token).to.be.a('string');",
+                  "  pm.expect(jsonData.data.access_token.length).to.be.above(0);",
+                  "});",
+                  "",
+                  "pm.test('Token type is bearer', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data.token_type).to.equal('bearer');",
+                  "});",
+                  "",
+                  "pm.test('Store token in environment', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.environment.set('jwt_token', jsonData.data.access_token);",
+                  "});",
+                  "",
+                  "pm.test('Response time is less than 1000ms', function() {",
+                  "  pm.expect(pm.response.responseTime).to.be.below(1000);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Pre-request script for login",
+                  "// Verify required environment variables",
+                  "const baseUrl = pm.environment.get('base_url');",
+                  "if (!baseUrl) {",
+                  "  throw new Error('base_url environment variable is not set');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"admin\", \"password\": \"admin123\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          },
+          "response": [
+            {
+              "name": "Success",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"username\": \"admin\", \"password\": \"admin123\"}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/login",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "auth", "login"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\"status\": \"success\", \"data\": {\"access_token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\", \"token_type\": \"bearer\", \"expires_in\": 86400, \"user\": {\"id\": 1, \"username\": \"admin\", \"role\": \"admin\"}}, \"timestamp\": \"2026-06-26T17:00:00Z\", \"request_id\": \"550e8400-e29b-41d4-a716-446655440000\"}"
+            }
+          ]
+        },
+        {
+          "name": "Current User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has success status', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.status).to.equal('success');",
+                  "});",
+                  "",
+                  "pm.test('Response contains user data', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.have.property('id');",
+                  "  pm.expect(jsonData.data).to.have.property('username');",
+                  "  pm.expect(jsonData.data).to.have.property('role');",
+                  "  pm.expect(jsonData.data).to.have.property('created_at');",
+                  "});",
+                  "",
+                  "pm.test('User has valid role', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  const validRoles = ['admin', 'viewer', 'operator'];",
+                  "  pm.expect(validRoles).to.include(jsonData.data.role);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "me"]
+            }
+          }
+        },
+        {
+          "name": "Login - Invalid Credentials",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 401', function() {",
+                  "  pm.response.to.have.status(401);",
+                  "});",
+                  "",
+                  "pm.test('Response has error status', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.status).to.equal('error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"admin\", \"password\": \"wrongpassword\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Login - Missing Username",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 422', function() {",
+                  "  pm.response.to.have.status(422);",
+                  "});",
+                  "",
+                  "pm.test('Response contains validation errors', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.status).to.equal('error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"password\": \"admin123\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Metrics",
+      "item": [
+        {
+          "name": "Get Config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has success status', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.status).to.equal('success');",
+                  "});",
+                  "",
+                  "pm.test('Response contains tile configurations', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.be.a('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/metrics/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "metrics", "config"]
+            }
+          }
+        },
+        {
+          "name": "Get Live Metrics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has success status', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.status).to.equal('success');",
+                  "});",
+                  "",
+                  "pm.test('Response contains metrics data', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.have.property('metrics');",
+                  "  pm.expect(jsonData.data).to.have.property('last_updated');",
+                  "});",
+                  "",
+                  "pm.test('Metrics have required fields', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data.metrics).to.be.a('object');",
+                  "  for (let key in jsonData.data.metrics) {",
+                  "    const metric = jsonData.data.metrics[key];",
+                  "    pm.expect(metric).to.have.property('status');",
+                  "    pm.expect(['Aktiv', 'Warnung', 'Kritisch', 'ERROR']).to.include(metric.status);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/metrics",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "metrics"]
+            }
+          }
+        },
+        {
+          "name": "Get Metric History",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has pagination metadata', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.pagination).to.have.property('limit');",
+                  "  pm.expect(jsonData.pagination).to.have.property('offset');",
+                  "  pm.expect(jsonData.pagination).to.have.property('total');",
+                  "  pm.expect(jsonData.pagination).to.have.property('has_more');",
+                  "});",
+                  "",
+                  "pm.test('Data array is present', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/metrics/history/we_bgl?days=7&limit=50&offset=0",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "metrics", "history", "we_bgl"],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "7"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Metric History - Invalid Metric",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 400 or 404', function() {",
+                  "  pm.expect([400, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/metrics/history/invalid_metric_key",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "metrics", "history", "invalid_metric_key"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains status ok', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.status).to.equal('ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            }
+          }
+        },
+        {
+          "name": "Deep Health Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has all health check fields', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.have.property('status');",
+                  "  pm.expect(jsonData.data).to.have.property('checks');",
+                  "  pm.expect(jsonData.data).to.have.property('response_time_ms');",
+                  "});",
+                  "",
+                  "pm.test('Health status is valid', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  const validStatuses = ['healthy', 'degraded', 'unhealthy'];",
+                  "  pm.expect(validStatuses).to.include(jsonData.data.status);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/health/deep",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "health", "deep"]
+            }
+          }
+        },
+        {
+          "name": "Oracle Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains oracle check', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data.checks).to.have.property('oracle');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/health/oracle",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "health", "oracle"]
+            }
+          }
+        },
+        {
+          "name": "PostgreSQL Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains postgres check', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data.checks).to.have.property('postgres');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/health/postgres",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "health", "postgres"]
+            }
+          }
+        },
+        {
+          "name": "Automation Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains automation check', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data.checks).to.have.property('automation');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/health/automation",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "health", "automation"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audit",
+      "item": [
+        {
+          "name": "Get Audit Logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has pagination', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.pagination).to.have.property('limit');",
+                  "  pm.expect(jsonData.pagination).to.have.property('offset');",
+                  "  pm.expect(jsonData.pagination).to.have.property('total');",
+                  "});",
+                  "",
+                  "pm.test('Audit logs have required fields', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  if (jsonData.data.length > 0) {",
+                  "    const log = jsonData.data[0];",
+                  "    pm.expect(log).to.have.property('timestamp');",
+                  "    pm.expect(log).to.have.property('event_type');",
+                  "    pm.expect(log).to.have.property('actor');",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/audit/logs?limit=50&offset=0",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "audit", "logs"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Search Audit Logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has pagination', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.pagination).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/audit/search?event_type=START_WORKER&actor=admin&status=success&limit=50&offset=0",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "audit", "search"],
+              "query": [
+                {
+                  "key": "event_type",
+                  "value": "START_WORKER"
+                },
+                {
+                  "key": "actor",
+                  "value": "admin"
+                },
+                {
+                  "key": "status",
+                  "value": "success"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Trace Request by ID",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has request_id in data', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.request_id).to.exist;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/audit/trace/550e8400-e29b-41d4-a716-446655440000",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "audit", "trace", "550e8400-e29b-41d4-a716-446655440000"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sektor Pilot",
+      "item": [
+        {
+          "name": "Start Worker",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has success status', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.status).to.equal('success');",
+                  "});",
+                  "",
+                  "pm.test('Response contains sector_id and status', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.have.property('sector_id');",
+                  "  pm.expect(jsonData.data).to.have.property('status');",
+                  "  pm.expect(['started', 'already_running']).to.include(jsonData.data.status);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"sector_id\": \"bsf_halle1\", \"user\": \"admin\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/automation/start",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "automation", "start"]
+            }
+          }
+        },
+        {
+          "name": "Pause Worker",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains status paused', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data.status).to.equal('paused');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"sector_id\": \"bsf_halle1\", \"user\": \"admin\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/automation/pause",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "automation", "pause"]
+            }
+          }
+        },
+        {
+          "name": "Stop Worker",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains status stopped', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data.status).to.equal('stopped');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"sector_id\": \"bsf_halle1\", \"user\": \"admin\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/automation/stop",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "automation", "stop"]
+            }
+          }
+        },
+        {
+          "name": "Get Worker Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains worker status details', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.have.property('sector_id');",
+                  "  pm.expect(jsonData.data).to.have.property('status');",
+                  "});",
+                  "",
+                  "pm.test('Status is valid', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  const validStatuses = ['running', 'paused', 'stopped'];",
+                  "  pm.expect(validStatuses).to.include(jsonData.data.status);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/automation/status/bsf_halle1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "automation", "status", "bsf_halle1"]
+            }
+          }
+        },
+        {
+          "name": "Get All Workers Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 200', function() {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response contains workers array', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.have.property('workers');",
+                  "  pm.expect(jsonData.data.workers).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('Response contains summary', function() {",
+                  "  var jsonData = pm.response.json();",
+                  "  pm.expect(jsonData.data).to.have.property('summary');",
+                  "  pm.expect(jsonData.data.summary).to.have.property('total');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/automation/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "automation", "status"]
+            }
+          }
+        },
+        {
+          "name": "Start Worker - Invalid Sector",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status code is 400', function() {",
+                  "  pm.response.to.have.status(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{jwt_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"sector_id\": \"invalid_sector\", \"user\": \"admin\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/automation/start",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "automation", "start"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwt_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

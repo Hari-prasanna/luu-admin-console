@@ -4,7 +4,7 @@
   "google_sheets": {
     "spreadsheet_id": "",
     "test_sheet_name": "Inventur",
-    "trigger_cell": "A2",
+    "trigger_cell": "A1",
     "sektor_sheet_name": "sektor"
   },
   "oracle": {

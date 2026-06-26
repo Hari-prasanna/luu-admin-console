@@ -10,22 +10,28 @@ import logging
 from typing import List
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 
 from backend.config import Constants
 from backend.exceptions import (
     ConfigurationError,
     DockerExecutionError,
     GoogleSheetsAuthenticationError,
+    GoogleSheetsDataError,
     GoogleSheetsNetworkError,
+)
+from backend.models import (
+    SectorWorkerStartRequest,
+    SectorWorkerPauseRequest,
+    SectorWorkerStopRequest,
+    WorkerActionResponse,
+    WorkerStatusResponse,
+    SectorInfo,
+    HealthCheckResponse,
 )
 from backend.automation.sektor_pilot.executor import ContainerManager, ContainerState
 from backend.automation.sektor_pilot.sector_config import get_sector_config, list_sectors
-from backend.automation.sektor_pilot.repository import (
-    AuditLedger,
-    AuditActionType,
-    AuditOperationStatus,
-)
+from backend.repositories import AuditRepository
+from backend.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -33,154 +39,41 @@ router = APIRouter(prefix="/api/sektor-pilot", tags=["sektor-pilot"])
 
 # Module-level singletons (initialized once on import)
 _container_manager = ContainerManager()
-_audit_ledger = AuditLedger()
-
-
-# ─── Request / Response Models ───
-
-
-class SectorWorkerStartRequest(BaseModel):
-    """Request body for starting a sector automation worker."""
-
-    sector_id: str = Field(
-        ..., description="Sector identifier (bsf_halle1, bsf_bestand, akl_bestand)"
-    )
-    user: str = Field(default="system", description="User identifier for audit logging")
-    oracle_env_path: str = Field(default="oracle.env", description="Path to oracle.env")
-
-
-class SectorWorkerPauseRequest(BaseModel):
-    """Request body for pausing a sector automation worker."""
-
-    sector_id: str = Field(..., description="Sector identifier")
-    user: str = Field(default="system", description="User identifier for audit logging")
-
-
-class SectorWorkerStopRequest(BaseModel):
-    """Request body for stopping a sector automation worker."""
-
-    sector_id: str = Field(..., description="Sector identifier")
-    user: str = Field(default="system", description="User identifier for audit logging")
-
-
-class WorkerActionResponse(BaseModel):
-    """Response from action endpoints (start / pause / stop)."""
-
-    success: bool = Field(..., description="Whether the action succeeded")
-    state: str = Field(..., description="Container state after the action")
-    message: str = Field(..., description="Human-readable action result message")
-    sector_id: str = Field(..., description="Sector that was actioned")
-
-
-class WorkerStatusResponse(BaseModel):
-    """Response from status endpoints."""
-
-    sector_id: str
-    container_name: str
-    state: str
-    container_id: str | None
-    started_at: float | None
-    paused_at: float | None
-
-
-class SectorInfo(BaseModel):
-    """Summary information about a configured sector."""
-
-    sector_id: str
-    name: str
-    description: str
-
-
-class HealthCheckResponse(BaseModel):
-    """Response from the health check endpoint."""
-
-    status: str
-    service: str
 
 
 # ─── Audit Logging Helper ───
 
 
-async def _call_audit_ledger(
-    spreadsheet_id: str,
-    audit_sheet_name: str,
+async def _log_worker_action(
     user_identifier: str,
-    audit_action_type: str,
+    event_type: str,
     sector_id: str,
-    operation_succeeded: bool,
-    operation_message: str,
+    success: bool,
+    message: str = "",
 ) -> None:
     """
-    Invoke the audit ledger and swallow Google Sheets errors (non-blocking).
-
-    Logs all failures locally so the primary API response is never blocked.
+    Log worker action to database audit log (non-blocking).
 
     Args:
-        spreadsheet_id: Google Sheets document ID
-        audit_sheet_name: Sheet tab name for audit log
         user_identifier: User who initiated the action
-        audit_action_type: Action string (START_DOCKER, PAUSE_DOCKER, STOP_DOCKER)
-        sector_id: Sector affected by the action
-        operation_succeeded: Whether the action completed successfully
-        operation_message: Optional detail message for the audit entry
+        event_type: Action type (START_WORKER, PAUSE_WORKER, STOP_WORKER)
+        sector_id: Sector that was actioned
+        success: Whether the action succeeded
+        message: Optional detail message
     """
-    audit_status = AuditOperationStatus.SUCCESS if operation_succeeded else AuditOperationStatus.FAILURE
     try:
-        await _audit_ledger.log_action(
-            spreadsheet_id=spreadsheet_id,
-            sheet_name=audit_sheet_name,
-            user=user_identifier,
-            action=AuditActionType(audit_action_type),
-            sector_id=sector_id,
-            status=audit_status,
-            message=operation_message,
-        )
-    except GoogleSheetsAuthenticationError as auth_failure:
-        logger.error("audit_logging_failed_authentication", extra={"sector_id": sector_id, "error": str(auth_failure)})
-        return
-    except GoogleSheetsNetworkError as network_failure:
-        logger.warning("audit_logging_failed_network", extra={"sector_id": sector_id, "error": str(network_failure)})
-        return
-    logger.info("audit_entry_logged", extra={"user": user_identifier, "action": audit_action_type, "sector_id": sector_id, "success": operation_succeeded})
-
-
-async def _log_worker_action_to_audit_sheet(
-    spreadsheet_id: str,
-    audit_sheet_name: str,
-    console_logs_sheet_name: str,
-    user_identifier: str,
-    audit_action_type: str,
-    sector_id: str,
-    operation_succeeded: bool,
-    operation_message: str = "",
-) -> None:
-    """
-    Append a worker action entry to both audit log and console_logs sheets (non-blocking).
-
-    Args:
-        spreadsheet_id: Google Sheets document ID
-        audit_sheet_name: Sheet tab name for detailed audit log
-        console_logs_sheet_name: Sheet tab name for console_logs (flat format)
-        user_identifier: User who initiated the action
-        audit_action_type: Action string (START_DOCKER, PAUSE_DOCKER, STOP_DOCKER)
-        sector_id: Sector affected by the action
-        operation_succeeded: Whether the action completed successfully
-        operation_message: Optional detail message for the audit entry
-    """
-    await _call_audit_ledger(
-        spreadsheet_id, audit_sheet_name, user_identifier,
-        audit_action_type, sector_id, operation_succeeded, operation_message,
-    )
-
-    try:
-        await _audit_ledger.log_console_action(
-            spreadsheet_id=spreadsheet_id,
-            sheet_name=console_logs_sheet_name,
-            action_triggered=audit_action_type,
-            target_name=sector_id,
-        )
-    except (GoogleSheetsAuthenticationError, GoogleSheetsNetworkError, GoogleSheetsDataError) as sheets_failure:
-        logger.warning("console_action_logging_failed", extra={"sector_id": sector_id, "error": str(sheets_failure)})
+        async with AsyncSessionLocal() as session:
+            audit_repo = AuditRepository(session)
+            await audit_repo.create({
+                "actor": user_identifier,
+                "event_type": event_type,
+                "status": "success" if success else "failure",
+                "description": message or f"{event_type.lower()} for sector {sector_id}",
+                "metadata": {"sector_id": sector_id},
+            })
+            await session.commit()
+    except Exception as audit_error:
+        logger.warning("audit_logging_failed", extra={"sector_id": sector_id, "error": str(audit_error)})
 
 
 # ─── Shared Action Dispatch Helper ───
@@ -237,22 +130,22 @@ def _raise_http_exception_for_sector_error(
     raise HTTPException(status_code=500, detail=f"Failed {operation_description}") from caught_exception
 
 
-async def _execute_worker_action_with_audit(
+async def _execute_worker_action(
     sector_id: str,
     user_identifier: str,
-    audit_action_type: str,
+    event_type: str,
     container_operation_callable: callable,
+    operation_description: str,
 ) -> WorkerActionResponse:
     """
-    Execute a container lifecycle action with audit logging and error mapping.
-
-    Shared by start / pause / stop endpoints to eliminate repetition.
+    Execute a container lifecycle action with audit logging and error handling.
 
     Args:
         sector_id: Sector to action
-        user_identifier: User initiating the action (for audit log)
-        audit_action_type: Audit action string (START_DOCKER, PAUSE_DOCKER, STOP_DOCKER)
+        user_identifier: User initiating the action
+        event_type: Action type for audit log
         container_operation_callable: Zero-arg callable that performs the container action
+        operation_description: Description of operation for error logging
 
     Returns:
         WorkerActionResponse with success, state, message, sector_id
@@ -261,18 +154,13 @@ async def _execute_worker_action_with_audit(
         HTTPException: On configuration or Docker errors
     """
     try:
-        sector_config = get_sector_config(sector_id)
+        get_sector_config(sector_id)
         container_action_result = container_operation_callable()
 
-        await _log_worker_action_to_audit_sheet(
-            spreadsheet_id=sector_config["spreadsheet_id"],
-            audit_sheet_name=sector_config["audit_sheet_name"],
-            console_logs_sheet_name=sector_config.get("console_logs_sheet_name", "console_logs"),
-            user_identifier=user_identifier,
-            audit_action_type=audit_action_type,
-            sector_id=sector_id,
-            operation_succeeded=container_action_result["success"],
-            operation_message=container_action_result.get("message", ""),
+        await _log_worker_action(
+            user_identifier, event_type, sector_id,
+            container_action_result["success"],
+            container_action_result.get("message", "")
         )
 
         return WorkerActionResponse(
@@ -283,8 +171,12 @@ async def _execute_worker_action_with_audit(
         )
 
     except Exception as sector_action_failure:
+        await _log_worker_action(
+            user_identifier, event_type, sector_id, False,
+            f"Failed: {str(sector_action_failure)}"
+        )
         _raise_http_exception_for_sector_error(
-            sector_action_failure, sector_id, audit_action_type.lower().replace("_", " ")
+            sector_action_failure, sector_id, operation_description
         )
 
 
@@ -322,13 +214,24 @@ async def start_worker(request: SectorWorkerStartRequest) -> WorkerActionRespons
     Raises:
         HTTPException: 400 for unknown sector, 500 for Docker/system errors
     """
-    return await _execute_worker_action_with_audit(
+    sector_config = get_sector_config(request.sector_id)
+    if not sector_config.get("spreadsheet_id"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Spreadsheet ID is not configured for sector: {request.sector_id}. "
+                f"Set environment variable for this sector before starting worker."
+            ),
+        )
+
+    return await _execute_worker_action(
         sector_id=request.sector_id,
         user_identifier=request.user,
-        audit_action_type="START_DOCKER",
+        event_type="START_WORKER",
         container_operation_callable=lambda: _container_manager.start(
             request.sector_id, request.oracle_env_path
         ),
+        operation_description="starting worker",
     )
 
 
@@ -346,11 +249,12 @@ async def pause_worker(request: SectorWorkerPauseRequest) -> WorkerActionRespons
     Raises:
         HTTPException: 400 for unknown sector, 500 for Docker/system errors
     """
-    return await _execute_worker_action_with_audit(
+    return await _execute_worker_action(
         sector_id=request.sector_id,
         user_identifier=request.user,
-        audit_action_type="PAUSE_DOCKER",
+        event_type="PAUSE_WORKER",
         container_operation_callable=lambda: _container_manager.pause(request.sector_id),
+        operation_description="pausing worker",
     )
 
 
@@ -368,11 +272,12 @@ async def stop_worker(request: SectorWorkerStopRequest) -> WorkerActionResponse:
     Raises:
         HTTPException: 400 for unknown sector, 500 for Docker/system errors
     """
-    return await _execute_worker_action_with_audit(
+    return await _execute_worker_action(
         sector_id=request.sector_id,
         user_identifier=request.user,
-        audit_action_type="STOP_DOCKER",
+        event_type="STOP_WORKER",
         container_operation_callable=lambda: _container_manager.stop(request.sector_id),
+        operation_description="stopping worker",
     )
 
 

@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from backend.automation.sektor_pilot.sector_config import get_sector_config
 
 
 # ─── Enumerations ─────────────────────────────────────────────────────────────
@@ -68,26 +70,32 @@ class ContainerCommandResult:
 # ─── Pydantic Request / Response Models ───────────────────────────────────────
 
 
-class SectorWorkerStartRequest(BaseModel):
+class _SectorWorkerBaseRequest(BaseModel):
+    """Base request payload with dynamic sector validation."""
+
+    sector_id: str = Field(..., description="Sector identifier")
+    user: str = Field(default="system", description="Initiating user (recorded in audit log)")
+
+    @field_validator("sector_id")
+    @classmethod
+    def validate_sector_id(cls, value: str) -> str:
+        """Validate sector_id against active sector registry (no hardcoded IDs)."""
+        get_sector_config(value)
+        return value
+
+
+class SectorWorkerStartRequest(_SectorWorkerBaseRequest):
     """Request payload to start a sector automation worker container."""
 
-    sector_id: str = Field(..., description="Sector identifier (bsf_halle1, bsf_bestand, akl_bestand)")
-    user: str = Field(default="system", description="Initiating user (recorded in audit log)")
     oracle_env_path: str = Field(default="oracle.env", description="Path to oracle.env credentials file")
 
 
-class SectorWorkerPauseRequest(BaseModel):
+class SectorWorkerPauseRequest(_SectorWorkerBaseRequest):
     """Request payload to pause a running sector worker."""
 
-    sector_id: str = Field(..., description="Sector identifier")
-    user: str = Field(default="system", description="Initiating user (recorded in audit log)")
 
-
-class SectorWorkerStopRequest(BaseModel):
+class SectorWorkerStopRequest(_SectorWorkerBaseRequest):
     """Request payload to stop and remove a sector worker container."""
-
-    sector_id: str = Field(..., description="Sector identifier")
-    user: str = Field(default="system", description="Initiating user (recorded in audit log)")
 
 
 class ActionResponse(BaseModel):
@@ -108,6 +116,7 @@ class StatusResponse(BaseModel):
     container_id: Optional[str] = None
     started_at: Optional[float] = None
     paused_at: Optional[float] = None
+    idle_timeout_seconds: Optional[int] = None
 
 
 class SectorListItem(BaseModel):
