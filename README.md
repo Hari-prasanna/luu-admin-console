@@ -2,7 +2,6 @@
 
 > **Portfolio note:** Derived from production internal tooling I built and shipped at work. Company-identifying names, database hosts, and customer references have been replaced with neutral placeholders. The architecture, patterns, and implementation are entirely my own.
 >
-> Also referenced in: [neatify-bot](https://github.com/hariprasannaravichandran-ops/neatify-bot)
 
 Real-time operations dashboard — FastAPI + PostgreSQL backend, React + Vite frontend, containerised with Docker Compose.
 
